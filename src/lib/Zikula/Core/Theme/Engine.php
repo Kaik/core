@@ -73,6 +73,8 @@ class Engine
      * @var \Zikula\Bundle\CoreBundle\HttpKernel\ZikulaKernel
      */
     private $kernel;
+    
+    private $requestStack;
     /**
      * The filter service.
      * @var Filter
@@ -88,6 +90,7 @@ class Engine
      */
     public function __construct(RequestStack $requestStack, Reader $annotationReader, ZikulaKernel $kernel, $filter)
     {
+        $this->requestStack = $requestStack;
         $this->annotationReader = $annotationReader;
         $this->kernel = $kernel;
         $this->filterService = $filter;
@@ -254,41 +257,57 @@ class Engine
      */
     private function setMatchingRealm()
     {
-        $themeConfig = $this->activeThemeBundle->getConfig();
+        $themeConfig = $this->getTheme()->getConfig();
         // defining an admin realm overrides all other options for 'admin' annotated methods
         if ($this->annotationValue == 'admin' && isset($themeConfig['admin'])) {
             $this->realm = 'admin';
+
             return;
         }
+        $request = $this->requestStack->getMasterRequest();
+        $requestAttributes = $request->attributes->all();
+        dump($requestAttributes);
         // @todo BC remove at Core-2.0
-        if ((isset($this->requestAttributes['_zkType']) && $this->requestAttributes['_zkType'] == 'admin') || (isset($this->requestAttributes['lct']))) {
+        $lct = $request->query->get('lct', null);
+        if ((isset($requestAttributes['_zkType']) && $requestAttributes['_zkType'] == 'admin')
+            || ((isset($requestAttributes['_route']) && in_array($requestAttributes['_route'], ['legacy', 'legacy_short_url'])) && ($request->query->get('type') == 'admin'))
+            || isset($lct)) {
             $this->realm = 'admin';
+
             return;
         }
         // match `/` for home realm
-        if (preg_match(';^\\/$;', $this->requestAttributes['pathInfo']) && isset($themeConfig['home'])) {
+        if (isset($requestAttributes['_route']) && $requestAttributes['_route'] == 'home') {
             $this->realm = 'home';
+
             return;
+        }elseif (isset($requestAttributes['_zkModule']) && $requestAttributes['_zkModule'] == '') {
+            $this->realm = 'home';
+
+            return;           
         }
+
         unset($themeConfig['admin'], $themeConfig['home'], $themeConfig['master']); // remove to avoid scanning/matching in loop
+        $pathInfo = $request->getPathInfo();
         foreach ($themeConfig as $realm => $config) {
             // @todo is there a faster way to do this?
             if (!empty($config['pattern'])) {
                 $pattern = ';' . str_replace('/', '\\/', $config['pattern']) . ';i'; // delimiters are ; and i means case-insensitive
                 $valuesToMatch = [];
-                if (isset($this->requestAttributes['pathInfo'])) {
-                    $valuesToMatch[] = $this->requestAttributes['pathInfo']; // e.g. /pages/display/welcome-to-pages-content-manager
+                if (isset($pathInfo)) {
+                    $valuesToMatch[] = $pathInfo; // e.g. /pages/display/welcome-to-pages-content-manager
                 }
-                if (isset($this->requestAttributes['_route'])) {
-                    $valuesToMatch[] = $this->requestAttributes['_route']; // e.g. zikulapagesmodule_user_display
+                if (isset($requestAttributes['_route'])) {
+                    $valuesToMatch[] = $requestAttributes['_route']; // e.g. zikulapagesmodule_user_display
                 }
-                if (isset($this->requestAttributes['_zkModule'])) {
-                    $valuesToMatch[] = $this->requestAttributes['_zkModule']; // e.g. zikulapagesmodule
+                if (isset($requestAttributes['_zkModule'])) {
+                    $valuesToMatch[] = $requestAttributes['_zkModule']; // e.g. zikulapagesmodule
                 }
                 foreach ($valuesToMatch as $value) {
                     $match = preg_match($pattern, $value);
                     if ($match === 1) {
                         $this->realm = $realm;
+
                         return; // use first match and do not continue to attempt to match patterns
                     }
                 }
